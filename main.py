@@ -12,7 +12,7 @@ from src.security import security
 from src.core.config import settings
 from src.db.connection import engine
 from src.deps.deps import CurrentUser, SessionDep
-from src.schema.schema import Token
+from src.schema.schema import Token, UserCreate
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -26,7 +26,7 @@ async def login(
 ) -> Token:
 
     user = crud.authenticate(
-        session=session, email=form_data.username, password=form_data.password
+        db=session, email=form_data.username, password=form_data.password
     )
     if not user:
         raise HTTPException(
@@ -45,37 +45,15 @@ async def login(
 
 
 @app.post("/singup", response_model=schemas.User)
-async def create_user(session: SessionDep, user: schemas.UserCreate):
-    db_user = crud.get_user(session, email=user.email)
+async def create_user(session: SessionDep, user: UserCreate):
+    db_user = crud.get_user(db=session, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-    return crud.create_user(session, user)
+    return crud.create_user(db=session, user=user)
 
 
 @app.get("/users/me/", response_model=schemas.User)
 async def read_users_me(current_user: CurrentUser, session: SessionDep):
-    db_user = crud.get_user(session, user_id=current_user.id)
+    db_user = crud.get_user(db=session, user_id=current_user.id)
     return db_user
 
-
-@app.get("/users/me/items/", response_model=list[schemas.Item])
-async def read_own_items(
-    session: SessionDep,
-    current_user: CurrentUser,
-    skip: int = 0,
-    limit: int = 100,
-):
-    db_items = crud.get_items(
-        session, user_id=current_user.id, skip=skip, limit=limit
-    )
-
-    return db_items
-
-
-@app.middleware("http")
-async def add_process_time_header_middleware(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
-    return response
