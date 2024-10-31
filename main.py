@@ -1,51 +1,81 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
-import models
-import src.db.connection as connection
-from typing import List
-from src.models.table import Item, ItemCreate
+import time
+from datetime import timedelta
+from typing import Annotated
 
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordRequestForm
+
+from src.crud import crud
+from src.models import models
+from src.schema import schemas
+from src.security import security
+from src.core.config import settings
+from src.db.connection import engine
+from src.deps.deps import CurrentUser, SessionDep
+from src.schema.schema import Token
+
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-models.Base.metadata.create_all(bind=connection.engine)
 
-@app.post("/items/", response_model=Item)
-def create_item(item: ItemCreate, db: Session = Depends(connection.get_db)):
-    db_item = models.Item(**item.dict())
-    db.add(db_item)
-    db.commit()
-    db.refresh(db_item)
-    return db_item
+@app.post("/login/access-token/")
+async def login(
+    session: SessionDep,
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+) -> Token:
 
-@app.get("/items/", response_model=List[Item])
-def read_items(skip: int = 0, limit: int = 10, db: Session = Depends(connection.get_db)):
-    items = db.query(models.Item).offset(skip).limit(limit).all()
-    return items
+    user = crud.authenticate(
+        session=session, email=form_data.username, password=form_data.password
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(
+        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+    return Token(
+        access_token=security.create_access_token(
+            user.id, expires_delta=access_token_expires
+        )
+    )
 
-@app.get("/items/{item_id}", response_model=Item)
-def read_item(item_id: int, db: Session = Depends(connection.get_db)):
-    db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
-    if db_item is None:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return db_item
 
-@app.put("/items/{item_id}", response_model=Item)
-def update_item(item_id: int, item: ItemCreate, db: Session = Depends(connection.get_db)):
-    db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
-    if db_item is None:
-        raise HTTPException(status_code=404, detail="Item not found")
-    for key, value in item.dict().items():
-        setattr(db_item, key, value)
-    db.commit()
-    db.refresh(db_item)
-    return db_item
+@app.post("/singup", response_model=schemas.User)
+async def create_user(session: SessionDep, user: schemas.UserCreate):
+    db_user = crud.get_user(session, email=user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    return crud.create_user(session, user)
 
-@app.delete("/items/{item_id}", response_model=Item)
-def delete_item(item_id: int, db: Session = Depends(connection.get_db)):
-    db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
-    if db_item is None:
-        raise HTTPException(status_code=404, detail="Item not found")
-    db.delete(db_item)
-    db.commit()
-    return db_item
+
+@app.get("/users/me/", response_model=schemas.User)
+async def read_users_me(current_user: CurrentUser, session: SessionDep):
+    db_user = crud.get_user(session, user_id=current_user.id)
+    return db_user
+
+
+@app.get("/users/me/items/", response_model=list[schemas.Item])
+async def read_own_items(
+    session: SessionDep,
+    current_user: CurrentUser,
+    skip: int = 0,
+    limit: int = 100,
+):
+    db_items = crud.get_items(
+        session, user_id=current_user.id, skip=skip, limit=limit
+    )
+
+    return db_items
+
+
+@app.middleware("http")
+async def add_process_time_header_middleware(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response

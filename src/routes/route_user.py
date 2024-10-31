@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 
 from src.controller.user import c_create_user, c_delete_user, c_get_user, c_update_user
-from src.models.table import User
+from src.models.user import User
 
 app = FastAPI()
 
